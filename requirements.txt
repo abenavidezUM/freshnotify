@@ -1,3 +1,7 @@
 aiomysql>=0.2.0        # MariaDB async (servidor)
 PyMySQL>=1.1.0         # MariaDB sync (workers)
 python-dotenv>=1.0.0   # lee el .env
+
+celery>=5.3.0          # tareas en segundo plano + beat
+redis>=5.0.0           # broker de Celery y pub/sub
+bcrypt>=4.0.0          # hash de contraseñas
