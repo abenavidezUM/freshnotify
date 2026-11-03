@@ -1,0 +1,3 @@
+aiomysql>=0.2.0        # MariaDB async (servidor)
+PyMySQL>=1.1.0         # MariaDB sync (workers)
+python-dotenv>=1.0.0   # lee el .env
