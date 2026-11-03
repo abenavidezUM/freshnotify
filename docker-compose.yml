@@ -1,0 +1,41 @@
+# MariaDB y Redis para desarrollo. Por ahora el servidor, los workers y
+# los clientes corren directo en la máquina.
+
+services:
+
+  mariadb:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root_fresh_pass}
+      MYSQL_DATABASE: ${DB_NAME:-fresh_db}
+      MYSQL_USER: ${DB_USER:-fresh_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-fresh_pass}
+    ports:
+      # 3307 en el host para no chocar con un MySQL/MariaDB local en 3306
+      - "${DB_PORT:-3307}:3306"
+    volumes:
+      - fresh_db_data:/var/lib/mysql
+      # Se ejecuta solo la primera vez (con el volumen vacío)
+      - ./docker/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "-h", "localhost",
+             "-u", "${DB_USER:-fresh_user}", "-p${DB_PASSWORD:-fresh_pass}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  fresh_db_data:
