@@ -11,7 +11,7 @@ USE fresh_db;
 CREATE TABLE IF NOT EXISTS supermercados (
     id            INT AUTO_INCREMENT PRIMARY KEY,
     nombre        VARCHAR(100) NOT NULL UNIQUE,
-    -- Hash bcrypt de la contraseña (todavía no se usa)
+    -- Hash bcrypt de la contraseña de la sucursal
     password_hash VARCHAR(255) DEFAULT NULL,
     -- Con cuántos días de anticipación avisar
     umbral_dias   INT NOT NULL DEFAULT 7,
@@ -57,9 +57,10 @@ CREATE TABLE IF NOT EXISTS notificaciones (
 -- lotes por vencer sin importar el día.
 -- -----------------------------------------------------------------------------
 
-INSERT IGNORE INTO supermercados (id, nombre, umbral_dias) VALUES
-    (1, 'Super Vea Centro', 7),
-    (2, 'Atomo Guaymallen', 5);
+-- Contraseña de las dos sucursales: "1234". Las nuevas se dan de alta desde el monitor.
+INSERT IGNORE INTO supermercados (id, nombre, password_hash, umbral_dias) VALUES
+    (1, 'Super Vea Centro', '$2b$12$a9G3bZ9h6zqFSeDzakKOz.tDDlsCxJwNFPO2rvWGrz7nlDy8lT1WS', 7),
+    (2, 'Atomo Guaymallen', '$2b$12$a9G3bZ9h6zqFSeDzakKOz.tDDlsCxJwNFPO2rvWGrz7nlDy8lT1WS', 5);
 
 INSERT IGNORE INTO lotes (supermercado_id, codigo, producto, categoria, cantidad, fecha_vencimiento) VALUES
     (1, 'LAC-001', 'Yogur bebible 1L',      'lacteos',   48, DATE_ADD(CURDATE(), INTERVAL 3 DAY)),
