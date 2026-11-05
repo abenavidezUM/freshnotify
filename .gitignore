@@ -5,3 +5,6 @@ venv/
 .env
 *.sock
 .DS_Store
+
+# lo genera celery beat al correr
+celerybeat-schedule*
