@@ -1,20 +1,26 @@
 """
 Cliente de sucursal.
 
-Se conecta al servidor, se identifica con el nombre de la sucursal y después
-manda una operación por cada opción del menú y espera la respuesta. Lo que
-se muestra en pantalla está en ui.py.
+El servidor puede mandar notificaciones en cualquier momento, no solo como
+respuesta a un pedido. Por eso hay una corrutina (escuchar_servidor) que lee
+todo lo que llega: las notificaciones las muestra en el momento y las
+respuestas las deja en una cola para el menú.
+
+input() bloquea, así que el menú corre en un thread con run_in_executor
+para no frenar la escucha.
 """
 
 import argparse
 import asyncio
+import getpass
 
 from src.shared import SERVER_CONNECT_HOST, SERVER_PORT, enviar_mensaje, recibir_mensaje
 from src.client import ui
 
 
 def construir_mensaje(opcion: str) -> dict | None:
-    """Opción del menú → mensaje para el servidor (None si la opción no existe)."""
+    """Opción del menú → mensaje para el servidor (None si la opción no existe).
+    Usa input(), por eso se llama con run_in_executor."""
     if opcion == "1":
         return {"accion": "crear_lote", **ui.pedir_datos_lote()}
     if opcion == "2":
@@ -34,16 +40,38 @@ def construir_mensaje(opcion: str) -> dict | None:
     return None
 
 
-async def ejecutar_cliente(host: str, puerto: int, nombre: str):
+async def escuchar_servidor(reader, cola_respuestas: asyncio.Queue):
+    """Único lector del socket. Si el servidor cierra, mete None en la cola
+    para que el menú se entere."""
+    try:
+        while True:
+            mensaje = await recibir_mensaje(reader)
+            if mensaje is None:
+                await cola_respuestas.put(None)
+                break
+
+            if mensaje.get("tipo") == "notificacion":
+                # \a hace sonar la terminal; el \n la separa del prompt
+                print(f"\a\n  🔔 NOTIFICACIÓN: {mensaje.get('mensaje', '')}\n")
+            else:
+                await cola_respuestas.put(mensaje)
+    except (asyncio.IncompleteReadError, ConnectionResetError):
+        await cola_respuestas.put(None)
+
+
+async def ejecutar_cliente(host: str, puerto: int, nombre: str, password: str):
     try:
         reader, writer = await asyncio.open_connection(host, puerto)
     except (ConnectionRefusedError, OSError):
         print(f"✗ No se pudo conectar a {host}:{puerto}. ¿Está corriendo el servidor?")
         return
 
+    loop = asyncio.get_running_loop()
+    escucha = None
+
     try:
-        # Handshake: la sucursal se identifica por nombre
-        await enviar_mensaje(writer, {"accion": "conectar", "nombre": nombre})
+        # Login (antes de arrancar la escucha)
+        await enviar_mensaje(writer, {"accion": "conectar", "nombre": nombre, "password": password})
         respuesta = await recibir_mensaje(reader)
 
         if respuesta is None or respuesta.get("tipo") == "rechazo":
@@ -51,24 +79,31 @@ async def ejecutar_cliente(host: str, puerto: int, nombre: str):
             print(f"✗ Conexión rechazada: {motivo}")
             return
 
-        print(f"\n✓ Conectado como '{respuesta.get('nombre', nombre)}'")
+        print(f"\n✓ Autenticado como '{respuesta.get('nombre', nombre)}'")
         ui.mostrar_resumen(respuesta)
 
-        # Una operación por vuelta. input() bloquea, pero por ahora el
-        # cliente no tiene nada más que hacer mientras espera.
+        # A partir de acá corren el menú y la escucha a la vez
+        cola_respuestas: asyncio.Queue = asyncio.Queue()
+        escucha = asyncio.create_task(escuchar_servidor(reader, cola_respuestas))
+
         while True:
-            opcion = ui.mostrar_menu(respuesta.get("nombre", nombre))
+            opcion = await loop.run_in_executor(None, ui.mostrar_menu, respuesta.get("nombre", nombre))
             if opcion == "0":
                 print("Hasta luego.")
                 break
 
-            mensaje = construir_mensaje(opcion)
+            mensaje = await loop.run_in_executor(None, construir_mensaje, opcion)
             if mensaje is None:
                 print("  ⚠ Opción inválida.")
                 continue
 
             await enviar_mensaje(writer, mensaje)
-            resultado = await recibir_mensaje(reader)
+            try:
+                resultado = await asyncio.wait_for(cola_respuestas.get(), timeout=10)
+            except asyncio.TimeoutError:
+                print("✗ El servidor no respondió a tiempo.")
+                continue
+
             if resultado is None:
                 print("✗ El servidor cerró la conexión.")
                 break
@@ -77,6 +112,8 @@ async def ejecutar_cliente(host: str, puerto: int, nombre: str):
     except asyncio.IncompleteReadError:
         print("✗ Se perdió la conexión con el servidor.")
     finally:
+        if escucha is not None:
+            escucha.cancel()
         writer.close()
         try:
             await writer.wait_closed()
@@ -98,7 +135,8 @@ def parsear_argumentos():
 if __name__ == "__main__":
     args = parsear_argumentos()
     nombre = args.nombre or input("Nombre del supermercado: ").strip()
+    password = getpass.getpass("Contraseña: ")
     try:
-        asyncio.run(ejecutar_cliente(args.host, args.puerto, nombre))
+        asyncio.run(ejecutar_cliente(args.host, args.puerto, nombre, password))
     except KeyboardInterrupt:
         print("\nHasta luego.")
