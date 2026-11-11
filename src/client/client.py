@@ -14,7 +14,10 @@ import argparse
 import asyncio
 import getpass
 
-from src.shared import SERVER_CONNECT_HOST, SERVER_PORT, enviar_mensaje, recibir_mensaje
+from src.shared import (
+    SERVER_CONNECT_HOST, SERVER_PORT, enviar_mensaje, recibir_mensaje,
+    ErrorProtocolo, MensajeInvalido,
+)
 from src.client import ui
 
 
@@ -55,7 +58,8 @@ async def escuchar_servidor(reader, cola_respuestas: asyncio.Queue):
                 print(f"\a\n  🔔 NOTIFICACIÓN: {mensaje.get('mensaje', '')}\n")
             else:
                 await cola_respuestas.put(mensaje)
-    except (asyncio.IncompleteReadError, ConnectionResetError):
+    except (asyncio.IncompleteReadError, ConnectionResetError, ErrorProtocolo, MensajeInvalido):
+        # Si el servidor manda algo que no se entiende, se trata como conexión perdida
         await cola_respuestas.put(None)
 
 

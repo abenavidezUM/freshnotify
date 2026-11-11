@@ -5,7 +5,9 @@ lotes hasta que se desconectan.
 
 import asyncio
 
-from src.shared import enviar_mensaje, recibir_mensaje, obtener_logger
+from src.shared import (
+    enviar_mensaje, recibir_mensaje, ErrorProtocolo, MensajeInvalido, obtener_logger, esquemas,
+)
 from src.infrastructure import (
     get_async_connection,
     buscar_supermercado_por_nombre,
@@ -28,13 +30,18 @@ class AtencionClientes:
         """Login de la sucursal con nombre y contraseña. El hash se verifica en
         el pool de procesos para no frenar al resto de los clientes.
         Devuelve los datos del supermercado, o None si se rechaza."""
-        mensaje = await recibir_mensaje(reader)
-        if mensaje is None or mensaje.get("accion") != "conectar":
+        try:
+            mensaje = await recibir_mensaje(reader)
+        except MensajeInvalido:
+            mensaje = {}
+        if mensaje is None:
+            return None
+        if esquemas.validar(mensaje, esquemas.LOGIN) is not None:
             await enviar_mensaje(writer, {"tipo": "rechazo", "mensaje": "Handshake inválido."})
             return None
 
-        nombre = (mensaje.get("nombre") or "").strip()
-        password = mensaje.get("password") or ""
+        nombre = mensaje["nombre"].strip()
+        password = mensaje["password"]
         if not nombre or not password:
             await enviar_mensaje(writer, {"tipo": "rechazo", "mensaje": "Nombre y contraseña son obligatorios."})
             return None
@@ -155,17 +162,36 @@ class AtencionClientes:
             await enviar_mensaje(writer, {**resumen, "tipo": "bienvenida", "nombre": sm_nombre})
 
             while True:
-                mensaje = await recibir_mensaje(reader)
+                # Si el mensaje llegó entero pero no sirve, se contesta y la
+                # conexión sigue: el próximo mensaje se puede leer bien
+                try:
+                    mensaje = await recibir_mensaje(reader)
+                except MensajeInvalido as e:
+                    await enviar_mensaje(writer, {"tipo": "respuesta", "ok": False, "mensaje": str(e)})
+                    continue
                 if mensaje is None:
                     break
 
                 accion = mensaje.get("accion", "?")
+                if (problema := esquemas.validar(mensaje, esquemas.SUCURSAL)) is not None:
+                    logger.warning(f"[{sm_nombre}] pedido inválido: {problema}")
+                    await enviar_mensaje(writer, {"tipo": "respuesta", "ok": False, "mensaje": problema})
+                    continue
+
                 resultado = await self.despachar_accion(conn, sm_id, mensaje)
                 logger.info(f"[{sm_nombre}] {accion} → ok={resultado.get('ok')}")
                 await enviar_mensaje(writer, {"tipo": "respuesta", **resultado})
 
         except asyncio.IncompleteReadError:
             logger.info(f"Desconexión abrupta de {direccion}")
+        except ErrorProtocolo as e:
+            # No se sabe dónde empieza el próximo mensaje: se avisa y se corta
+            logger.warning(f"Error de protocolo con {direccion}: {e}")
+            try:
+                await enviar_mensaje(writer, {"tipo": "error", "ok": False,
+                                              "mensaje": "Mensaje inválido, se cierra la conexión."})
+            except OSError:
+                pass
         except Exception as e:
             logger.error(f"Error inesperado con {direccion}: {e}")
 

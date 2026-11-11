@@ -15,4 +15,4 @@ from .config import (
     MAX_LOGINS_SIMULTANEOS,
 )
 from .logger import obtener_logger
-from .protocol import enviar_mensaje, recibir_mensaje
+from .protocol import enviar_mensaje, recibir_mensaje, ErrorProtocolo, MensajeInvalido

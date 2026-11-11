@@ -8,7 +8,9 @@ archivo local, así que solo se puede administrar desde la misma máquina.
 import asyncio
 import os
 
-from src.shared import enviar_mensaje, recibir_mensaje, obtener_logger
+from src.shared import (
+    enviar_mensaje, recibir_mensaje, ErrorProtocolo, MensajeInvalido, obtener_logger, esquemas,
+)
 from src.infrastructure import (
     get_async_connection,
     buscar_supermercado_por_nombre,
@@ -94,17 +96,27 @@ class ControladorAdmin:
         """El monitor abre, manda un comando, recibe la respuesta y cierra."""
         conn = None
         try:
-            conn = await get_async_connection()
-            comando = await recibir_mensaje(reader)
+            try:
+                comando = await recibir_mensaje(reader)
+            except MensajeInvalido as e:
+                await enviar_mensaje(writer, {"ok": False, "mensaje": str(e)})
+                return
             if comando is None:
                 return
 
             logger.info(f"[monitor] comando: {comando.get('accion', '?')}")
+            if (problema := esquemas.validar(comando, esquemas.MONITOR)) is not None:
+                await enviar_mensaje(writer, {"ok": False, "mensaje": problema})
+                return
+
+            conn = await get_async_connection()
             respuesta = await self.ejecutar(conn, comando)
             await enviar_mensaje(writer, respuesta)
 
         except asyncio.IncompleteReadError:
             logger.info("[monitor] conexión IPC cerrada abruptamente")
+        except ErrorProtocolo as e:
+            logger.warning(f"[monitor] error de protocolo: {e}")
         except Exception as e:
             logger.error(f"[monitor] error: {e}")
             try:
