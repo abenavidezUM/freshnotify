@@ -15,6 +15,7 @@ from src.infrastructure import (
     crear_lote, listar_lotes, buscar_lote, actualizar_lote, eliminar_lote,
     ver_notificaciones,
 )
+from src.server import errores
 
 logger = obtener_logger("servidor")
 
@@ -139,6 +140,7 @@ class AtencionClientes:
 
         conn = None
         supermercado = None  # queda con los datos solo si la sesión se registró
+        en_sesion = False    # ya se mandó la bienvenida: los errores dejan de ser "rechazo"
 
         try:
             conn = await get_async_connection()
@@ -160,6 +162,7 @@ class AtencionClientes:
 
             resumen = await obtener_resumen_supermercado(conn, sm_id)
             await enviar_mensaje(writer, {**resumen, "tipo": "bienvenida", "nombre": sm_nombre})
+            en_sesion = True
 
             while True:
                 # Si el mensaje llegó entero pero no sirve, se contesta y la
@@ -167,7 +170,7 @@ class AtencionClientes:
                 try:
                     mensaje = await recibir_mensaje(reader)
                 except MensajeInvalido as e:
-                    await enviar_mensaje(writer, {"tipo": "respuesta", "ok": False, "mensaje": str(e)})
+                    await enviar_mensaje(writer, errores.respuesta(errores.PROTOCOLO, str(e)))
                     continue
                 if mensaje is None:
                     break
@@ -175,25 +178,46 @@ class AtencionClientes:
                 accion = mensaje.get("accion", "?")
                 if (problema := esquemas.validar(mensaje, esquemas.SUCURSAL)) is not None:
                     logger.warning(f"[{sm_nombre}] pedido inválido: {problema}")
-                    await enviar_mensaje(writer, {"tipo": "respuesta", "ok": False, "mensaje": problema})
+                    await enviar_mensaje(writer, errores.respuesta(errores.PROTOCOLO, problema))
                     continue
 
-                resultado = await self.despachar_accion(conn, sm_id, mensaje)
+                # Un pedido que falla no corta la sesión: se contesta y se sigue
+                try:
+                    if conn is None:
+                        conn = await get_async_connection()
+                    resultado = await self.despachar_accion(conn, sm_id, mensaje)
+                except errores.ERRORES_BASE as e:
+                    logger.error(f"[{sm_nombre}] {accion}: base de datos no disponible ({e})")
+                    if conn is not None:
+                        conn.close()
+                    conn = None  # en el próximo pedido se intenta conectar de nuevo
+                    resultado = errores.respuesta(errores.BASE_DATOS)
+                except Exception:
+                    logger.exception(f"[{sm_nombre}] {accion}: error inesperado")
+                    resultado = errores.respuesta(errores.INTERNO)
+
                 logger.info(f"[{sm_nombre}] {accion} → ok={resultado.get('ok')}")
                 await enviar_mensaje(writer, {"tipo": "respuesta", **resultado})
 
-        except asyncio.IncompleteReadError:
+        except (asyncio.IncompleteReadError, *errores.DESCONEXIONES):
             logger.info(f"Desconexión abrupta de {direccion}")
         except ErrorProtocolo as e:
             # No se sabe dónde empieza el próximo mensaje: se avisa y se corta
             logger.warning(f"Error de protocolo con {direccion}: {e}")
-            try:
-                await enviar_mensaje(writer, {"tipo": "error", "ok": False,
-                                              "mensaje": "Mensaje inválido, se cierra la conexión."})
-            except OSError:
-                pass
-        except Exception as e:
-            logger.error(f"Error inesperado con {direccion}: {e}")
+            await self._avisar(writer, errores.respuesta(
+                errores.PROTOCOLO, "Mensaje inválido, se cierra la conexión.",
+                tipo="error" if en_sesion else "rechazo"))
+        except errores.ERRORES_BASE as e:
+            logger.error(f"Base de datos no disponible atendiendo a {direccion}: {e}")
+            await self._avisar(writer, errores.respuesta(
+                errores.BASE_DATOS, tipo="error" if en_sesion else "rechazo"))
+        except errores.ERRORES_AUTENTICACION as e:
+            logger.error(f"El pool de autenticación no responde: {e!r}")
+            await self._avisar(writer, errores.respuesta(errores.AUTENTICACION, tipo="rechazo"))
+        except Exception:
+            logger.exception(f"Error inesperado con {direccion}")
+            await self._avisar(writer, errores.respuesta(
+                errores.INTERNO, tipo="error" if en_sesion else "rechazo"))
 
         finally:
             if supermercado is not None:
@@ -202,4 +226,15 @@ class AtencionClientes:
             if conn is not None:
                 conn.close()
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except errores.DESCONEXIONES:
+                pass
+
+    @staticmethod
+    async def _avisar(writer, mensaje: dict) -> None:
+        """Último mensaje antes de cerrar, si todavía se puede mandar."""
+        try:
+            await enviar_mensaje(writer, mensaje)
+        except OSError:
+            pass

@@ -17,6 +17,7 @@ from src.infrastructure import (
     crear_supermercado, listar_supermercados,
     cambiar_activo_supermercado, obtener_estadisticas_globales,
 )
+from src.server import errores
 from src.workers.tasks import verificar_vencimientos, limpiar_notificaciones_antiguas
 
 logger = obtener_logger("servidor")
@@ -99,35 +100,50 @@ class ControladorAdmin:
             try:
                 comando = await recibir_mensaje(reader)
             except MensajeInvalido as e:
-                await enviar_mensaje(writer, {"ok": False, "mensaje": str(e)})
+                await enviar_mensaje(writer, errores.respuesta(errores.PROTOCOLO, str(e)))
                 return
             if comando is None:
                 return
 
             logger.info(f"[monitor] comando: {comando.get('accion', '?')}")
             if (problema := esquemas.validar(comando, esquemas.MONITOR)) is not None:
-                await enviar_mensaje(writer, {"ok": False, "mensaje": problema})
+                await enviar_mensaje(writer, errores.respuesta(errores.PROTOCOLO, problema))
                 return
 
             conn = await get_async_connection()
             respuesta = await self.ejecutar(conn, comando)
             await enviar_mensaje(writer, respuesta)
 
-        except asyncio.IncompleteReadError:
+        except (asyncio.IncompleteReadError, *errores.DESCONEXIONES):
             logger.info("[monitor] conexión IPC cerrada abruptamente")
         except ErrorProtocolo as e:
             logger.warning(f"[monitor] error de protocolo: {e}")
-        except Exception as e:
-            logger.error(f"[monitor] error: {e}")
-            try:
-                await enviar_mensaje(writer, {"ok": False, "mensaje": f"Error interno: {e}"})
-            except Exception:
-                pass
+        # El detalle va al log del servidor; al monitor solo el tipo de error
+        except errores.ERRORES_BASE as e:
+            logger.error(f"[monitor] base de datos no disponible: {e}")
+            await self._avisar(writer, errores.respuesta(errores.BASE_DATOS))
+        except errores.ERRORES_AUTENTICACION as e:
+            logger.error(f"[monitor] el pool de autenticación no responde: {e!r}")
+            await self._avisar(writer, errores.respuesta(errores.AUTENTICACION))
+        except Exception:
+            logger.exception("[monitor] error inesperado")
+            await self._avisar(writer, errores.respuesta(
+                errores.INTERNO, "Error interno del servidor. El detalle quedó en el log."))
         finally:
             if conn is not None:
                 conn.close()
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except errores.DESCONEXIONES:
+                pass
+
+    @staticmethod
+    async def _avisar(writer, mensaje: dict) -> None:
+        try:
+            await enviar_mensaje(writer, mensaje)
+        except OSError:
+            pass
 
     async def escuchar(self, socket_path: str):
         """Socket Unix para el monitor."""
