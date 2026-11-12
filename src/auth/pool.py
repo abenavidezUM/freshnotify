@@ -19,7 +19,9 @@ Sincronización entre procesos:
 
 import asyncio
 import multiprocessing
+import signal
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 
 import bcrypt
 
@@ -38,6 +40,9 @@ def _init_worker(semaforo, logins_ok, logins_fallidos):
     multiprocessing no se pueden pasar como argumento de una tarea del
     pool, por eso se comparten con initializer/initargs."""
     global _semaforo, _logins_ok, _logins_fallidos
+    # Ctrl+C le llega a todo el grupo de procesos. El que decide cómo apagar
+    # es el servidor (pool.cerrar); si no, los hijos mueren a mitad de un login
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     _semaforo = semaforo
     _logins_ok = logins_ok
     _logins_fallidos = logins_fallidos
@@ -75,29 +80,44 @@ class PoolAutenticacion:
         self._logins_ok = multiprocessing.Value("i", 0)
         self._logins_fallidos = multiprocessing.Value("i", 0)
 
-        self._executor = ProcessPoolExecutor(
-            max_workers=procesos,
-            initializer=_init_worker,
-            initargs=(self._semaforo, self._logins_ok, self._logins_fallidos),
-        )
+        self._executor = self._crear_executor()
         logger.info(
             f"Pool de autenticación: {procesos} procesos, "
             f"máx. {max_simultaneos} verificaciones simultáneas"
         )
 
-    async def verificar(self, password: str, password_hash: str) -> bool:
-        """Manda la verificación al pool y la espera sin frenar el event loop."""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._executor, _verificar_en_proceso,
-            password.encode("utf-8"), password_hash.encode("utf-8"),
+    def _crear_executor(self) -> ProcessPoolExecutor:
+        return ProcessPoolExecutor(
+            max_workers=self.procesos,
+            initializer=_init_worker,
+            initargs=(self._semaforo, self._logins_ok, self._logins_fallidos),
         )
 
-    async def hashear(self, password: str) -> str:
+    async def _ejecutar(self, funcion, *args):
+        """Corre la función en el pool sin frenar el event loop.
+
+        Si se muere uno de los procesos (lo mata el sistema, se queda sin
+        memoria) el executor queda roto para siempre: todo lo que se le mande
+        falla. En ese caso se arma uno nuevo para los próximos pedidos y este
+        se propaga (el servidor contesta un error de autenticación)."""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._executor, _hashear_en_proceso, password.encode("utf-8")
-        )
+        executor = self._executor
+        try:
+            return await loop.run_in_executor(executor, funcion, *args)
+        except BrokenProcessPool:
+            if self._executor is executor:  # otro pedido puede haberlo rearmado ya
+                logger.error("Se rompió el pool de autenticación, se crea uno nuevo")
+                executor.shutdown(wait=False, cancel_futures=True)
+                self._executor = self._crear_executor()
+            raise
+
+    async def verificar(self, password: str, password_hash: str) -> bool:
+        """Manda la verificación al pool y la espera sin frenar el event loop."""
+        return await self._ejecutar(_verificar_en_proceso,
+                                    password.encode("utf-8"), password_hash.encode("utf-8"))
+
+    async def hashear(self, password: str) -> str:
+        return await self._ejecutar(_hashear_en_proceso, password.encode("utf-8"))
 
     def estadisticas(self) -> dict:
         """Lee los contadores que van sumando los procesos hijos."""
@@ -112,5 +132,18 @@ class PoolAutenticacion:
             "logins_fallidos": fallidos,
         }
 
-    def cerrar(self):
-        self._executor.shutdown(wait=False, cancel_futures=True)
+    async def cerrar(self, tiempo_maximo: float = 5) -> None:
+        """Apagado ordenado: lo que estaba esperando turno se cancela, y a lo
+        que ya se está verificando se le da hasta tiempo_maximo para terminar
+        (un bcrypt tarda ~0,2 s, así que sobra). Si igual no termina, se
+        terminan los procesos para que el servidor no quede colgado."""
+        # shutdown(wait=True) bloquea: se espera desde un thread
+        espera = asyncio.to_thread(self._executor.shutdown, wait=True, cancel_futures=True)
+        try:
+            await asyncio.wait_for(espera, tiempo_maximo)
+            logger.info("Pool de autenticación cerrado")
+        except TimeoutError:
+            logger.warning(f"El pool no terminó en {tiempo_maximo} s, se terminan los procesos")
+            # El executor no tiene una forma pública de forzar el cierre
+            for proceso in list((self._executor._processes or {}).values()):
+                proceso.terminate()

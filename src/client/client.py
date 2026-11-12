@@ -118,6 +118,11 @@ async def ejecutar_cliente(host: str, puerto: int, nombre: str, password: str):
     finally:
         if escucha is not None:
             escucha.cancel()
+            # Esperarla: si no, el loop se cierra con la tarea a medio cancelar
+            try:
+                await escucha
+            except asyncio.CancelledError:
+                pass
         writer.close()
         try:
             await writer.wait_closed()

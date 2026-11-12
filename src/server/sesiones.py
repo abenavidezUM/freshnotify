@@ -8,6 +8,8 @@ loop y ningún método tiene un await entre leer y escribir el diccionario.
 
 import asyncio
 
+from src.shared import enviar_mensaje
+
 
 class GestorSesiones:
 
@@ -36,3 +38,15 @@ class GestorSesiones:
 
     def __len__(self) -> int:
         return len(self._sesiones)
+
+    async def cerrar_todas(self, aviso: str) -> None:
+        """Para el apagado: avisa a cada sucursal y cierra su conexión. Cada
+        handler se entera del cierre y saca su sesión de la lista."""
+        for sesion in list(self._sesiones.values()):
+            try:
+                await enviar_mensaje(sesion["writer"], {
+                    "tipo": "notificacion", "notif_tipo": "administrativa", "mensaje": aviso,
+                })
+            except OSError:
+                pass  # ya se estaba desconectando
+            sesion["writer"].close()

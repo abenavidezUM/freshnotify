@@ -25,9 +25,10 @@ logger = obtener_logger("servidor")
 
 class ControladorAdmin:
 
-    def __init__(self, sesiones, pool_auth):
+    def __init__(self, sesiones, pool_auth, cola_tareas):
         self.sesiones = sesiones
         self.pool_auth = pool_auth
+        self.cola_tareas = cola_tareas
 
     async def ejecutar(self, conn, comando: dict) -> dict:
         """Ejecuta un comando del monitor y devuelve la respuesta."""
@@ -82,14 +83,16 @@ class ControladorAdmin:
             return {"ok": True, "auth": self.pool_auth.estadisticas()}
 
         if accion == "run_tarea":
-            tarea = comando.get("tarea", "")
-            if tarea == "verificar_vencimientos":
-                verificar_vencimientos.delay()
-                return {"ok": True, "mensaje": "Tarea 'verificar_vencimientos' encolada."}
-            if tarea == "limpiar_notificaciones":
-                limpiar_notificaciones_antiguas.delay()
-                return {"ok": True, "mensaje": "Tarea 'limpiar_notificaciones_antiguas' encolada."}
-            return {"ok": False, "mensaje": f"Tarea '{tarea}' no reconocida."}
+            tareas = {
+                "verificar_vencimientos": verificar_vencimientos,
+                "limpiar_notificaciones": limpiar_notificaciones_antiguas,
+            }
+            tarea = tareas.get(comando["tarea"])
+            if tarea is None:
+                return {"ok": False, "mensaje": f"Tarea '{comando['tarea']}' no reconocida."}
+            if not await self.cola_tareas.encolar(tarea):
+                return {"ok": False, "mensaje": "No se pudo encolar la tarea: Redis no responde."}
+            return {"ok": True, "mensaje": f"Tarea '{tarea.name.rsplit('.', 1)[-1]}' encolada."}
 
         return {"ok": False, "mensaje": f"Acción '{accion}' no reconocida."}
 
@@ -154,5 +157,12 @@ class ControladorAdmin:
 
         servidor = await asyncio.start_unix_server(self.manejar_conexion, path=socket_path)
         logger.info(f"Monitor IPC escuchando en {socket_path}")
-        async with servidor:
-            await servidor.serve_forever()
+        try:
+            async with servidor:
+                await servidor.serve_forever()
+        finally:
+            # Al apagar se borra, así no queda un socket sin nadie detrás
+            # (el monitor daría 'Connection refused' en vez de 'no existe')
+            if os.path.exists(socket_path):
+                os.remove(socket_path)
+                logger.info(f"Socket {socket_path} borrado")
