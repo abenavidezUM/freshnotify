@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS supermercados (
     password_hash VARCHAR(255) DEFAULT NULL,
     -- Con cuántos días de anticipación avisar
     umbral_dias   INT NOT NULL DEFAULT 7,
+    -- Mail del encargado: recibe el resumen cuando hay alertas nuevas (opcional)
+    email         VARCHAR(150) DEFAULT NULL,
     activo        BOOLEAN NOT NULL DEFAULT TRUE,
     creado_en     DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -62,9 +64,9 @@ CREATE TABLE IF NOT EXISTS notificaciones (
 -- -----------------------------------------------------------------------------
 
 -- Contraseña de las dos sucursales: "1234". Las nuevas se dan de alta desde el monitor.
-INSERT IGNORE INTO supermercados (id, nombre, password_hash, umbral_dias) VALUES
-    (1, 'Super Vea Centro', '$2b$12$a9G3bZ9h6zqFSeDzakKOz.tDDlsCxJwNFPO2rvWGrz7nlDy8lT1WS', 7),
-    (2, 'Atomo Guaymallen', '$2b$12$a9G3bZ9h6zqFSeDzakKOz.tDDlsCxJwNFPO2rvWGrz7nlDy8lT1WS', 5);
+INSERT IGNORE INTO supermercados (id, nombre, password_hash, umbral_dias, email) VALUES
+    (1, 'Super Vea Centro', '$2b$12$a9G3bZ9h6zqFSeDzakKOz.tDDlsCxJwNFPO2rvWGrz7nlDy8lT1WS', 7, 'encargado@supervea-centro.test'),
+    (2, 'Atomo Guaymallen', '$2b$12$a9G3bZ9h6zqFSeDzakKOz.tDDlsCxJwNFPO2rvWGrz7nlDy8lT1WS', 5, 'encargado@atomo-guaymallen.test');
 
 INSERT IGNORE INTO lotes (supermercado_id, codigo, producto, categoria, cantidad, fecha_vencimiento) VALUES
     (1, 'LAC-001', 'Yogur bebible 1L',      'lacteos',   48, DATE_ADD(CURDATE(), INTERVAL 3 DAY)),

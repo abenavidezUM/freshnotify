@@ -52,8 +52,9 @@ def construir_comando(opcion: str) -> dict | None:
         nombre = input("Nombre de la sucursal: ").strip()
         password = getpass.getpass("Contraseña para la sucursal: ")
         umbral = input("Umbral de alerta en días [7]: ").strip() or "7"
+        email = input("Mail del encargado (opcional): ").strip()
         return {"accion": "registrar_supermercado", "nombre": nombre,
-                "password": password, "umbral_dias": umbral}
+                "password": password, "umbral_dias": umbral, "email": email}
     if opcion == "2":
         return {"accion": "listar_supermercados"}
     if opcion == "3":
@@ -75,11 +76,12 @@ def construir_comando(opcion: str) -> dict | None:
 
 def mostrar_respuesta(r: dict) -> None:
     if "supermercados" in r:
-        print(f"\n  {'NOMBRE':<28} {'UMBRAL':>7} {'LOTES':>6}  ESTADO")
-        print("  " + "─" * 55)
+        print(f"\n  {'NOMBRE':<28} {'UMBRAL':>7} {'LOTES':>6}  {'ESTADO':<9} MAIL")
+        print("  " + "─" * 88)
         for s in r["supermercados"]:
             estado = "activo" if s["activo"] else "INACTIVO"
-            print(f"  {s['nombre']:<28.28} {s['umbral_dias']:>5} d {s['lotes_activos']:>6}  {estado}")
+            print(f"  {s['nombre']:<28.28} {s['umbral_dias']:>5} d {s['lotes_activos']:>6}  "
+                  f"{estado:<9} {s.get('email') or '-'}")
     elif "estadisticas" in r:
         print("\n  Estadísticas globales")
         print("  ─────────────────────")

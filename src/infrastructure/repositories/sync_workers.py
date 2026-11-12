@@ -18,7 +18,7 @@ def supermercado_activo(conn, supermercado_id: int) -> dict | None:
     """None si no existe o si la desactivaron mientras la tarea esperaba en la cola."""
     with conn.cursor(pymysql.cursors.DictCursor) as cur:
         cur.execute(
-            "SELECT id, nombre, umbral_dias FROM supermercados WHERE id = %s AND activo = TRUE",
+            "SELECT id, nombre, umbral_dias, email FROM supermercados WHERE id = %s AND activo = TRUE",
             (supermercado_id,),
         )
         return cur.fetchone()

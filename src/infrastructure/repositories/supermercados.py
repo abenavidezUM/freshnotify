@@ -75,7 +75,8 @@ async def obtener_resumen_supermercado(conn, supermercado_id: int) -> dict:
 
 # --- Operaciones del monitor ---
 
-async def crear_supermercado(conn, nombre: str, password_hash: str, umbral_dias: int = 7) -> dict:
+async def crear_supermercado(conn, nombre: str, password_hash: str, umbral_dias: int = 7,
+                             email: str | None = None) -> dict:
     nombre = (nombre or "").strip()
     if not nombre:
         return {"ok": False, "mensaje": "El nombre es obligatorio."}
@@ -86,11 +87,16 @@ async def crear_supermercado(conn, nombre: str, password_hash: str, umbral_dias:
     except (ValueError, TypeError):
         return {"ok": False, "mensaje": "El umbral debe ser un entero entre 1 y 60 días."}
 
+    email = (email or "").strip() or None
+    if email is not None and "@" not in email:
+        return {"ok": False, "mensaje": "El mail no parece válido."}
+
     try:
         async with conn.cursor() as cur:
             await cur.execute(
-                "INSERT INTO supermercados (nombre, password_hash, umbral_dias) VALUES (%s, %s, %s)",
-                (nombre, password_hash, umbral_dias),
+                "INSERT INTO supermercados (nombre, password_hash, umbral_dias, email) "
+                "VALUES (%s, %s, %s, %s)",
+                (nombre, password_hash, umbral_dias, email),
             )
     except pymysql.err.IntegrityError:
         return {"ok": False, "mensaje": f"Ya existe un supermercado llamado '{nombre}'."}
@@ -102,7 +108,7 @@ async def listar_supermercados(conn) -> dict:
     async with conn.cursor(aiomysql.DictCursor) as cur:
         await cur.execute(
             """
-            SELECT s.nombre, s.umbral_dias, s.activo,
+            SELECT s.nombre, s.umbral_dias, s.activo, s.email,
                    COUNT(l.id) AS lotes_activos
             FROM supermercados s
             LEFT JOIN lotes l ON l.supermercado_id = s.id AND l.activo = TRUE
@@ -119,6 +125,7 @@ async def listar_supermercados(conn) -> dict:
                 "nombre": f["nombre"],
                 "umbral_dias": f["umbral_dias"],
                 "activo": bool(f["activo"]),
+                "email": f["email"],
                 "lotes_activos": int(f["lotes_activos"]),
             }
             for f in filas

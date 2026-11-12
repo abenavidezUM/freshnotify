@@ -7,10 +7,13 @@ el servidor la recibe y se la reenvía si está conectada.
 """
 
 import json
+import smtplib
+from email.message import EmailMessage
 
 from src.shared import (
     REDIS_NOTIFICATIONS_CHANNEL,
     NOTIFICATION_RETENTION_DAYS,
+    SMTP_HOST, SMTP_PORT, MAIL_REMITENTE,
     obtener_logger,
 )
 from src.infrastructure import get_sync_connection, get_sync_redis_client
@@ -75,6 +78,7 @@ def verificar_sucursal(supermercado_id: int):
     conn = get_sync_connection()
     redis_cli = get_sync_redis_client()
     alertas, bajas = 0, 0
+    nuevos = []  # avisos de esta pasada, para el mail
     try:
         sm = repo.supermercado_activo(conn, supermercado_id)
         if sm is None:
@@ -90,6 +94,7 @@ def verificar_sucursal(supermercado_id: int):
             if _persistir_y_publicar(conn, redis_cli, sm["id"], "vencimiento_proximo", mensaje,
                                      clave=f"proximo:{lote['codigo']}"):
                 alertas += 1
+                nuevos.append(mensaje)
 
         for lote in repo.dar_baja_lotes_vencidos(conn, sm["id"]):
             mensaje = (
@@ -98,6 +103,12 @@ def verificar_sucursal(supermercado_id: int):
             )
             _persistir_y_publicar(conn, redis_cli, sm["id"], "lote_vencido", mensaje)
             bajas += 1
+            nuevos.append(mensaje)
+
+        # El mail va en otra tarea (cola "mails"): esta termina enseguida y,
+        # si el servidor de correo anda lento o caído, no frena las revisiones
+        if nuevos and sm["email"]:
+            enviar_mail_alertas.delay(sm["email"], sm["nombre"], nuevos)
 
         logger.info(f"[verificar_sucursal] {sm['nombre']}: {alertas} alertas nuevas, "
                     f"{bajas} bajas automáticas")
@@ -105,6 +116,28 @@ def verificar_sucursal(supermercado_id: int):
     finally:
         conn.close()
         redis_cli.close()
+
+
+# OSError incluye los errores de smtplib y los de conexión: se reintenta
+# hasta 3 veces, esperando cada vez un poco más
+@app.task(bind=True, autoretry_for=(OSError,), retry_backoff=5, max_retries=3)
+def enviar_mail_alertas(self, destinatario: str, sucursal: str, avisos: list[str]):
+    """Le manda al encargado de la sucursal un resumen con los avisos nuevos."""
+    msg = EmailMessage()
+    msg["From"] = MAIL_REMITENTE
+    msg["To"] = destinatario
+    msg["Subject"] = f"FreshNotify · {sucursal}: {len(avisos)} lote(s) para revisar"
+    msg.set_content(
+        f"Hola, estos son los avisos nuevos de {sucursal}:\n\n"
+        + "\n".join(f"  {a}" for a in avisos)
+        + "\n\nEl detalle está en el historial de notificaciones de la sucursal.\n"
+    )
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
+        smtp.send_message(msg)
+
+    logger.info(f"[enviar_mail] {sucursal} → {destinatario} ({len(avisos)} avisos)")
+    # Quién lo mandó, para ver cómo se reparten los mails entre los workers
+    return {"worker": self.request.hostname}
 
 
 @app.task

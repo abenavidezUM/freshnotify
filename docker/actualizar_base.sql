@@ -6,3 +6,8 @@
 ALTER TABLE notificaciones
     ADD COLUMN IF NOT EXISTS clave VARCHAR(120) DEFAULT NULL,
     ADD UNIQUE INDEX IF NOT EXISTS supermercado_id_clave (supermercado_id, clave);
+
+-- Mail del encargado de cada sucursal
+ALTER TABLE supermercados ADD COLUMN IF NOT EXISTS email VARCHAR(150) DEFAULT NULL AFTER umbral_dias;
+UPDATE supermercados SET email = 'encargado@supervea-centro.test'  WHERE id = 1 AND email IS NULL;
+UPDATE supermercados SET email = 'encargado@atomo-guaymallen.test' WHERE id = 2 AND email IS NULL;

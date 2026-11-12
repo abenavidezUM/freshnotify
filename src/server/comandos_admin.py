@@ -41,7 +41,7 @@ class ControladorAdmin:
             # generar el hash también va al pool
             password_hash = await self.pool_auth.hashear(password)
             return await crear_supermercado(conn, comando.get("nombre"), password_hash,
-                                            comando.get("umbral_dias", 7))
+                                            comando.get("umbral_dias", 7), comando.get("email"))
 
         if accion == "listar_supermercados":
             return await listar_supermercados(conn)

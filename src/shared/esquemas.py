@@ -45,6 +45,7 @@ MONITOR = {
         "nombre": (TEXTO, True),
         "password": (TEXTO, True),
         "umbral_dias": (NUMERO, False),
+        "email": (TEXTO, False),
     },
     "listar_supermercados": {},
     "activar_supermercado": {"nombre": (TEXTO, True)},

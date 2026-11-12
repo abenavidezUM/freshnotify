@@ -48,6 +48,19 @@ VERIFICATION_INTERVAL_SECONDS = int(os.getenv("VERIFICATION_INTERVAL_SECONDS", 3
 # Días que se guardan las notificaciones leídas antes de borrarlas
 NOTIFICATION_RETENTION_DAYS = int(os.getenv("NOTIFICATION_RETENTION_DAYS", 30))
 
+# Si un worker se muere con una tarea a medio hacer, Redis se la vuelve a dar
+# a otro después de este tiempo. Tiene que ser más largo que la tarea más larga.
+CELERY_VISIBILITY_TIMEOUT = int(os.getenv("CELERY_VISIBILITY_TIMEOUT", 60))
+
+
+# --- Mails a los encargados ---
+# Por defecto va a Mailpit (servidor de prueba del compose, los mails se ven
+# en http://localhost:8025). Los workers del compose pasan por Toxiproxy, que
+# le agrega la demora que tendría un proveedor real.
+SMTP_HOST = os.getenv("SMTP_HOST", "localhost")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 1025))
+MAIL_REMITENTE = os.getenv("MAIL_REMITENTE", "alertas@freshnotify.test")
+
 
 # --- Login (pool de procesos) ---
 
