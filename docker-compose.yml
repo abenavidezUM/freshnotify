@@ -1,5 +1,31 @@
-# MariaDB y Redis para desarrollo. Por ahora el servidor, los workers y
-# los clientes corren directo en la máquina.
+# MariaDB y Redis, los workers de Celery y beat, y un servidor de mail de
+# prueba. El servidor, el monitor y el cliente corren directo en la máquina.
+#
+#   docker compose up -d                          todo
+#   docker compose up -d --scale worker-mail=3    con 3 contenedores mandando mails
+
+# Lo que comparten los workers y beat: la imagen de la app y cómo llegar a
+# los otros servicios (dentro de la red del compose, por nombre).
+x-app: &app
+  build: .
+  restart: unless-stopped
+  environment:
+    TZ: America/Argentina/Mendoza   # para que los logs muestren la hora de acá
+    DB_HOST: mariadb
+    DB_PORT: 3306
+    DB_NAME: ${DB_NAME:-fresh_db}
+    DB_USER: ${DB_USER:-fresh_user}
+    DB_PASSWORD: ${DB_PASSWORD:-fresh_pass}
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+    # Los mails pasan por Toxiproxy, que les agrega la demora de un proveedor real
+    SMTP_HOST: toxiproxy
+    SMTP_PORT: 1026
+  depends_on:
+    mariadb:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
 
 services:
 
@@ -36,6 +62,78 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # --- Workers: cada cola con sus contenedores, todos contra el mismo Redis ---
+  # Cada contenedor tiene 2 procesos (-c 2), como si fuera una máquina chica.
+  # %h es el hostname del contenedor, así cada réplica tiene otro nombre.
+
+  # Avisos en vivo y revisión de vencimientos: tareas cortas
+  worker-notif:
+    <<: *app
+    command: celery -A src.workers.celery_app worker -Q notificaciones -c 2 -n notif@%h --loglevel=info
+
+  # Mails a los encargados: tareas lentas, esta es la que se escala
+  worker-mail:
+    <<: *app
+    command: celery -A src.workers.celery_app worker -Q mails -c 2 -n mail@%h --loglevel=info
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      toxiproxy-demora:
+        condition: service_completed_successfully
+
+  # Uno solo: con dos, cada tarea periódica se encolaría dos veces
+  beat:
+    <<: *app
+    command: celery -A src.workers.celery_app beat -s /tmp/celerybeat-schedule --loglevel=info
+
+  # --- Mail de prueba ---
+
+  # Recibe los mails y los muestra en http://localhost:8025 (no manda nada afuera)
+  mailpit:
+    image: axllent/mailpit
+    restart: unless-stopped
+    ports:
+      - "8025:8025"   # web
+      - "1025:1025"   # SMTP, para los workers que corren en la máquina
+
+  # Proxy entre los workers y Mailpit. Mailpit está al lado y contesta en
+  # milisegundos; un proveedor real (Gmail, SendGrid) tarda bastante más.
+  # La API (8474) permite cambiar la demora o cortar el SMTP en vivo.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy
+    restart: unless-stopped
+    command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
+    volumes:
+      - ./docker/toxiproxy.json:/config/toxiproxy.json:ro
+    ports:
+      - "8474:8474"
+    depends_on:
+      - mailpit
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Corre una vez al levantar: le pone la demora a cada respuesta del SMTP.
+  # Borra la anterior antes de crearla, así se puede repetir el "up".
+  toxiproxy-demora:
+    image: curlimages/curl
+    environment:
+      DEMORA_MS: ${SMTP_DEMORA_MS:-150}
+    command:
+      - sh
+      - -c
+      - |
+        curl -s -o /dev/null -X DELETE http://toxiproxy:8474/proxies/smtp/toxics/demora
+        curl -sf -X POST http://toxiproxy:8474/proxies/smtp/toxics \
+          -d "{\"name\": \"demora\", \"type\": \"latency\", \"attributes\": {\"latency\": $$DEMORA_MS}}"
+    depends_on:
+      toxiproxy:
+        condition: service_healthy
 
 volumes:
   fresh_db_data:

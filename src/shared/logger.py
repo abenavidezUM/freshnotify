@@ -20,5 +20,8 @@ def obtener_logger(nombre: str) -> logging.Logger:
         handler.setFormatter(logging.Formatter(FORMATO, datefmt="%H:%M:%S"))
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
+        # Celery le pone su propio handler al logger raíz: sin esto, en los
+        # workers cada línea sale dos veces
+        logger.propagate = False
 
     return logger
