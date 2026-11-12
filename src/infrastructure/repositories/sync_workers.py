@@ -5,12 +5,23 @@ no tienen event loop.
 """
 
 import pymysql.cursors
+import pymysql.err
 
 
-def supermercados_activos(conn) -> list[dict]:
+def ids_supermercados_activos(conn) -> list[int]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM supermercados WHERE activo = TRUE ORDER BY id")
+        return [fila[0] for fila in cur.fetchall()]
+
+
+def supermercado_activo(conn, supermercado_id: int) -> dict | None:
+    """None si no existe o si la desactivaron mientras la tarea esperaba en la cola."""
     with conn.cursor(pymysql.cursors.DictCursor) as cur:
-        cur.execute("SELECT id, nombre, umbral_dias FROM supermercados WHERE activo = TRUE")
-        return list(cur.fetchall())
+        cur.execute(
+            "SELECT id, nombre, umbral_dias FROM supermercados WHERE id = %s AND activo = TRUE",
+            (supermercado_id,),
+        )
+        return cur.fetchone()
 
 
 def lotes_por_vencer(conn, supermercado_id: int, umbral_dias: int) -> list[dict]:
@@ -32,51 +43,61 @@ def lotes_por_vencer(conn, supermercado_id: int, umbral_dias: int) -> list[dict]
 
 
 def dar_baja_lotes_vencidos(conn, supermercado_id: int) -> list[dict]:
-    """Da de baja los lotes ya vencidos y devuelve cuáles eran, para avisar de cada uno."""
+    """Da de baja los lotes ya vencidos y devuelve los que dio de baja esta llamada.
+
+    Va de a un lote y con "AND activo = TRUE" en el UPDATE: si dos workers
+    revisan la misma sucursal a la vez, los dos ven el lote en el SELECT pero
+    solo a uno le cambia la fila (rowcount 1). El otro no lo cuenta y no avisa
+    dos veces. Lo mismo si la sucursal lo eliminó justo antes.
+    """
     with conn.cursor(pymysql.cursors.DictCursor) as cur:
         cur.execute(
             """
-            SELECT codigo, producto, cantidad FROM lotes
+            SELECT id, codigo, producto, cantidad FROM lotes
             WHERE supermercado_id = %s AND activo = TRUE AND fecha_vencimiento < CURDATE()
             """,
             (supermercado_id,),
         )
         vencidos = list(cur.fetchall())
 
-        if vencidos:
+        dados_de_baja = []
+        for lote in vencidos:
             cur.execute(
                 """
                 UPDATE lotes SET activo = FALSE, motivo_baja = 'vencido_automatico'
-                WHERE supermercado_id = %s AND activo = TRUE AND fecha_vencimiento < CURDATE()
+                WHERE id = %s AND activo = TRUE
                 """,
-                (supermercado_id,),
+                (lote["id"],),
             )
-    return vencidos
+            if cur.rowcount == 1:
+                dados_de_baja.append(lote)
+    return dados_de_baja
 
 
-def crear_notificacion(conn, supermercado_id: int, tipo: str, mensaje: str) -> None:
+def crear_notificacion(conn, supermercado_id: int, tipo: str, mensaje: str,
+                       clave: str | None = None) -> bool:
+    """Guarda la notificación. Devuelve False si era repetida.
+
+    La clave es para las alertas que van una vez por día: se le agrega la
+    fecha y el UNIQUE (supermercado_id, clave) de la tabla hace el resto. Antes
+    se preguntaba primero "¿ya avisé hoy?" y después se insertaba, y con dos
+    workers a la vez los dos podían preguntar antes de que el otro insertara.
+    Así la base decide sola y no hay hueco entre leer y escribir.
+    """
     with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO notificaciones (supermercado_id, tipo, mensaje) VALUES (%s, %s, %s)",
-            (supermercado_id, tipo, mensaje),
-        )
-
-
-def ya_notificado_hoy(conn, supermercado_id: int, tipo: str, mensaje: str) -> bool:
-    """Para no repetir alertas: Beat corre cada pocos segundos y sin esto el
-    mismo lote avisaría en cada pasada. Como el mensaje se arma siempre igual,
-    alcanza con buscar el mismo tipo y mensaje en el día."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT 1 FROM notificaciones
-            WHERE supermercado_id = %s AND tipo = %s AND mensaje = %s
-              AND DATE(creado_en) = CURDATE()
-            LIMIT 1
-            """,
-            (supermercado_id, tipo, mensaje),
-        )
-        return cur.fetchone() is not None
+        try:
+            cur.execute(
+                """
+                INSERT INTO notificaciones (supermercado_id, tipo, mensaje, clave)
+                VALUES (%s, %s, %s, CONCAT(%s, ':', CURDATE()))
+                """,
+                (supermercado_id, tipo, mensaje, clave),
+            )
+        except pymysql.err.IntegrityError as e:
+            if e.args[0] == 1062:  # clave duplicada: ya se avisó hoy
+                return False
+            raise
+    return True
 
 
 def limpiar_notificaciones_antiguas(conn, dias_retencion: int) -> int:

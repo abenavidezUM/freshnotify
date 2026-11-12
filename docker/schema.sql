@@ -49,7 +49,11 @@ CREATE TABLE IF NOT EXISTS notificaciones (
     mensaje         TEXT NOT NULL,
     leida           BOOLEAN NOT NULL DEFAULT FALSE,
     creado_en       DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (supermercado_id) REFERENCES supermercados(id)
+    -- Solo la tienen las alertas que no se pueden repetir (ej. "proximo:LAC-001:2026-11-10").
+    -- Con varios workers revisando a la vez, el UNIQUE hace que se guarde una sola.
+    clave           VARCHAR(120) DEFAULT NULL,
+    FOREIGN KEY (supermercado_id) REFERENCES supermercados(id),
+    UNIQUE (supermercado_id, clave)
 );
 
 -- -----------------------------------------------------------------------------
