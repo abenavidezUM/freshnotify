@@ -42,14 +42,8 @@ def lotes_por_vencer(conn, supermercado_id: int, umbral_dias: int) -> list[dict]
         return list(cur.fetchall())
 
 
-def dar_baja_lotes_vencidos(conn, supermercado_id: int) -> list[dict]:
-    """Da de baja los lotes ya vencidos y devuelve los que dio de baja esta llamada.
-
-    Va de a un lote y con "AND activo = TRUE" en el UPDATE: si dos workers
-    revisan la misma sucursal a la vez, los dos ven el lote en el SELECT pero
-    solo a uno le cambia la fila (rowcount 1). El otro no lo cuenta y no avisa
-    dos veces. Lo mismo si la sucursal lo eliminó justo antes.
-    """
+def lotes_vencidos(conn, supermercado_id: int) -> list[dict]:
+    """Lotes activos que ya pasaron su fecha de vencimiento."""
     with conn.cursor(pymysql.cursors.DictCursor) as cur:
         cur.execute(
             """
@@ -58,43 +52,75 @@ def dar_baja_lotes_vencidos(conn, supermercado_id: int) -> list[dict]:
             """,
             (supermercado_id,),
         )
-        vencidos = list(cur.fetchall())
+        return list(cur.fetchall())
 
-        dados_de_baja = []
-        for lote in vencidos:
+
+def dar_baja_vencido(conn, supermercado_id: int, lote_id: int, mensaje: str) -> bool:
+    """Da de baja el lote y guarda el aviso, las dos cosas o ninguna.
+    Devuelve False si el lote ya no estaba activo.
+
+    El "AND activo = TRUE" del UPDATE es para cuando dos workers revisan la
+    misma sucursal a la vez: los dos ven el lote en el SELECT, pero solo a uno
+    le cambia la fila (rowcount 1) y el otro no avisa dos veces. Lo mismo si
+    la sucursal lo eliminó justo antes.
+
+    Va en una transacción por los reintentos: si la base se cae entre la baja
+    y el aviso, sin transacción quedaría el lote dado de baja y sin aviso, y
+    al reintentar ya no estaría activo, así que nadie avisaría nunca.
+    """
+    conn.begin()
+    try:
+        with conn.cursor() as cur:
             cur.execute(
                 """
                 UPDATE lotes SET activo = FALSE, motivo_baja = 'vencido_automatico'
                 WHERE id = %s AND activo = TRUE
                 """,
-                (lote["id"],),
+                (lote_id,),
             )
-            if cur.rowcount == 1:
-                dados_de_baja.append(lote)
-    return dados_de_baja
+            if cur.rowcount != 1:
+                conn.rollback()
+                return False
+            cur.execute(
+                "INSERT INTO notificaciones (supermercado_id, tipo, mensaje) VALUES (%s, 'lote_vencido', %s)",
+                (supermercado_id, mensaje),
+            )
+        conn.commit()
+        return True
+    except BaseException:
+        # Si la conexión se cortó el rollback también falla, pero da igual:
+        # MariaDB descarta sola la transacción que quedó sin commit
+        try:
+            conn.rollback()
+        except pymysql.err.Error:
+            pass
+        raise
 
 
 def crear_notificacion(conn, supermercado_id: int, tipo: str, mensaje: str,
-                       clave: str | None = None) -> bool:
-    """Guarda la notificación. Devuelve False si era repetida.
+                       clave: str | None = None, diaria: bool = False) -> bool:
+    """Guarda la notificación. Devuelve False si ya había una con esa clave.
 
-    La clave es para las alertas que van una vez por día: se le agrega la
-    fecha y el UNIQUE (supermercado_id, clave) de la tabla hace el resto. Antes
-    se preguntaba primero "¿ya avisé hoy?" y después se insertaba, y con dos
-    workers a la vez los dos podían preguntar antes de que el otro insertara.
-    Así la base decide sola y no hay hueco entre leer y escribir.
+    La clave evita avisos repetidos y el UNIQUE (supermercado_id, clave) de la
+    tabla es el que decide. Antes se preguntaba primero "¿ya avisé?" y después
+    se insertaba, y con dos workers a la vez los dos podían preguntar antes de
+    que el otro insertara. Así no hay hueco entre leer y escribir.
+
+    Con diaria=True se le agrega la fecha a la clave: las alertas de "vence
+    pronto" van una vez por día, no una sola vez.
     """
+    valor_clave = "CONCAT(%s, ':', CURDATE())" if diaria else "%s"
     with conn.cursor() as cur:
         try:
             cur.execute(
-                """
+                f"""
                 INSERT INTO notificaciones (supermercado_id, tipo, mensaje, clave)
-                VALUES (%s, %s, %s, CONCAT(%s, ':', CURDATE()))
+                VALUES (%s, %s, %s, {valor_clave})
                 """,
                 (supermercado_id, tipo, mensaje, clave),
             )
         except pymysql.err.IntegrityError as e:
-            if e.args[0] == 1062:  # clave duplicada: ya se avisó hoy
+            if e.args[0] == 1062:  # clave duplicada
                 return False
             raise
     return True

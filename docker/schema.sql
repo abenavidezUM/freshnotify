@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS notificaciones (
     mensaje         TEXT NOT NULL,
     leida           BOOLEAN NOT NULL DEFAULT FALSE,
     creado_en       DATETIME DEFAULT CURRENT_TIMESTAMP,
-    -- Solo la tienen las alertas que no se pueden repetir (ej. "proximo:LAC-001:2026-11-10").
+    -- Solo la tienen las alertas que no se pueden repetir (ej. "proximo:LAC-001:2026-11-10")
+    -- y los avisos de lotes ("evento:<id de la tarea>", por si la tarea se reintenta).
     -- Con varios workers revisando a la vez, el UNIQUE hace que se guarde una sola.
     clave           VARCHAR(120) DEFAULT NULL,
     FOREIGN KEY (supermercado_id) REFERENCES supermercados(id),
