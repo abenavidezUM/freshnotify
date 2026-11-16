@@ -3,10 +3,14 @@ Pool de procesos para verificar contraseñas.
 
 bcrypt tarda ~0,2 s de CPU por verificación (es lento a propósito, para
 que la fuerza bruta sea cara). Si se hiciera en el event loop, cada login
-frenaría a todos los clientes. Por eso va a un ProcessPoolExecutor:
-procesos y no threads, porque con el GIL dos threads no ejecutan Python
-en paralelo. El servidor lo espera con run_in_executor y mientras tanto
-sigue atendiendo al resto.
+frenaría a todos los clientes. Por eso va a un ProcessPoolExecutor y el
+servidor lo espera con run_in_executor, mientras sigue atendiendo al resto.
+
+¿Por qué procesos y no threads? Con bcrypt en particular, threads también
+andarían: la librería suelta el GIL mientras calcula (lo medí, dan casi
+lo mismo). Pero eso depende de la librería; con procesos el trabajo de
+CPU corre en paralelo siempre, aunque sea Python puro, y si un proceso se
+cae no se lleva puesto al servidor (ver _ejecutar).
 
 Sincronización entre procesos:
 - BoundedSemaphore: limita cuántas verificaciones corren a la vez (para
