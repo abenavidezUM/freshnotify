@@ -1,13 +1,17 @@
-# MariaDB y Redis, los workers de Celery y beat, y un servidor de mail de
-# prueba. El servidor, el monitor y el cliente corren directo en la máquina.
+# Todo FreshNotify: MariaDB, Redis, el servidor, los workers de Celery, beat
+# y un servidor de mail de prueba. El monitor y el cliente son interactivos,
+# así que no arrancan con el "up": se abren aparte con "run".
 #
 #   docker compose up -d                          todo
 #   docker compose up -d --scale worker-mail=3    con 3 contenedores mandando mails
+#   docker compose run --rm client                una sucursal (cada run es otra)
+#   docker compose run --rm monitor               el monitor administrativo
 
-# Lo que comparten los workers y beat: la imagen de la app y cómo llegar a
-# los otros servicios (dentro de la red del compose, por nombre).
+# Lo que comparten el servidor, los workers y beat: la imagen de la app y cómo
+# llegar a los otros servicios (dentro de la red del compose, por nombre).
 x-app: &app
   build: .
+  image: freshnotify-app   # una sola imagen para todos, no una copia por servicio
   restart: unless-stopped
   environment:
     TZ: America/Argentina/Mendoza   # para que los logs muestren la hora de acá
@@ -21,6 +25,8 @@ x-app: &app
     # Los mails pasan por Toxiproxy, que les agrega la demora de un proveedor real
     SMTP_HOST: toxiproxy
     SMTP_PORT: 1026
+    # El socket del monitor va en un volumen que comparten el servidor y el monitor
+    MONITOR_SOCKET_PATH: /run/freshnotify/monitor.sock
   depends_on:
     mariadb:
       condition: service_healthy
@@ -28,6 +34,53 @@ x-app: &app
       condition: service_healthy
 
 services:
+
+  # --- Servidor central ---
+  server:
+    <<: *app
+    command: python -m src.server.server
+    ports:
+      - "${SERVER_PORT:-8888}:8888"
+    volumes:
+      - monitor_sock:/run/freshnotify
+    # docker stop manda SIGTERM y el servidor hace el apagado ordenado (cada
+    # paso tiene hasta 5 s). Si en este tiempo no terminó, recién ahí SIGKILL.
+    stop_grace_period: 30s
+    # El socket del monitor se crea cuando el servidor ya arrancó todo (y se
+    # borra al apagarse), así que sirve para saber si está listo
+    healthcheck:
+      test: ["CMD", "test", "-S", "/run/freshnotify/monitor.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- Interactivos (no arrancan con "up", se abren con "run") ---
+
+  # Monitor administrativo: habla con el servidor por el socket Unix del volumen
+  monitor:
+    <<: *app
+    profiles: [admin]
+    command: python -m src.monitor.monitor
+    restart: "no"
+    stdin_open: true
+    tty: true
+    volumes:
+      - monitor_sock:/run/freshnotify
+    depends_on:
+      server:
+        condition: service_healthy
+
+  # Cliente de una sucursal: se conecta por TCP al servicio "server"
+  client:
+    <<: *app
+    profiles: [client]
+    command: python -m src.client.client --host server
+    restart: "no"
+    stdin_open: true
+    tty: true
+    depends_on:
+      server:
+        condition: service_healthy
 
   mariadb:
     image: mariadb:11
@@ -137,3 +190,4 @@ services:
 
 volumes:
   fresh_db_data:
+  monitor_sock:

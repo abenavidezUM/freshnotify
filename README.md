@@ -69,6 +69,10 @@ flowchart LR
 
 ### Ahora: workers por cola, en contenedores
 
+Todo corre en Docker Compose: el servidor, los workers, beat, MariaDB, Redis y el mail. El
+monitor y la sucursal también son contenedores, pero interactivos (se abren con `run`). El monitor
+llega al socket Unix del servidor a través de un volumen compartido.
+
 ```mermaid
 flowchart LR
     subgraph Sucursales
@@ -93,7 +97,7 @@ flowchart LR
         PS{{canal pub/sub}}
     end
 
-    subgraph Docker[docker compose]
+    subgraph Docker[workers y mail]
         WN[worker-notif<br/>verificar_sucursal<br/>notificar_evento]
         WM1[worker-mail 1]
         WM2[worker-mail …N]
@@ -190,33 +194,31 @@ Cada mensaje es un JSON precedido por 4 bytes con su largo (big-endian), hasta 1
 
 ## Pendiente
 
-- Dockerizar el servidor, el monitor y el cliente (hoy corren en la máquina)
 - Pasar las pruebas de punta a punta a tests automáticos
 
 ## Cómo correr
 
-Requisitos: Docker y Python 3.11+.
+Requisito: Docker.
 
 ```bash
-# 1. MariaDB, Redis, los workers, beat, Mailpit y Toxiproxy
+# Todo: MariaDB, Redis, servidor, workers, beat, Mailpit y Toxiproxy
 docker compose up -d
 
-# 2. Dependencias
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+# Una sucursal (cada "run" es otra; datos de ejemplo: "Super Vea Centro" o
+# "Atomo Guaymallen", contraseña "1234")
+docker compose run --rm client
 
-# 3. Servidor (con el venv activado)
-python -m src.server.server
-
-# 4. Cliente (datos de ejemplo: "Super Vea Centro" o "Atomo Guaymallen", contraseña "1234")
-python -m src.client.client
-
-# 5. Monitor administrativo (alta de supermercados, estadísticas, forzar tareas)
-python -m src.monitor.monitor
+# Monitor administrativo (alta de supermercados, estadísticas, forzar tareas)
+docker compose run --rm monitor
 ```
 
-Para escalar los workers de mail: `docker compose up -d --scale worker-mail=N`. Los mails
-enviados se pueden ver en la interfaz de Mailpit (http://localhost:8025).
+- El servidor también escucha en `localhost:8888`, así que se le puede conectar un cliente
+  que corra fuera de Docker (`python -m src.client.client`, con Python 3.11+ y
+  `pip install -r requirements.txt`).
+- Para escalar los workers de mail: `docker compose up -d --scale worker-mail=N`.
+- Los mails enviados se ven en la interfaz de Mailpit (http://localhost:8025).
+- `docker compose stop server` (o `down`) le manda SIGTERM al servidor, que avisa a las
+  sucursales conectadas y se apaga ordenado.
 
 Si la base ya estaba creada con una versión anterior (el esquema solo se carga con el volumen
 vacío), hay que aplicar la migración:
