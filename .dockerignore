@@ -7,3 +7,5 @@ venv
 *.sock
 .DS_Store
 celerybeat-schedule*
+.pytest_cache
+tests

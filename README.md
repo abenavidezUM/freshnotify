@@ -192,10 +192,6 @@ Cada mensaje es un JSON precedido por 4 bytes con su largo (big-endian), hasta 1
 | `autenticacion` | el pool de procesos falló al verificar | se rechaza el login, se puede reintentar |
 | `interno` | cualquier otro error (el detalle queda en el log, no se manda) | sí |
 
-## Pendiente
-
-- Pasar las pruebas de punta a punta a tests automáticos
-
 ## Cómo correr
 
 Requisito: Docker.
@@ -227,6 +223,22 @@ vacío), hay que aplicar la migración:
 docker compose exec -T mariadb mariadb -ufresh_user -pfresh_pass fresh_db < docker/actualizar_base.sql
 ```
 
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest                      # todos
+pytest -m "not integracion" # solo los que no necesitan nada levantado
+```
+
+- **Unitarios:** framing y sus errores (mensajes pegados, JSON roto, mensaje a medias, largo
+  máximo), esquemas por acción, sesiones y la cola de encolado (que no frene el event loop,
+  que respete el orden y el tiempo máximo).
+- **Integración** (con el compose levantado; si MariaDB o Redis no están, se saltean): las
+  tareas de Celery contra la base real (reintento sin duplicar avisos, una alerta por día, baja
+  y aviso en la misma transacción) y el servidor real levantado en el puerto 8899: login,
+  sesión única, errores de protocolo, notificación en vivo y apagado con SIGTERM.
+
 ## Estructura
 
 ```
@@ -245,4 +257,5 @@ src/
 ├── workers/         Celery: tareas, colas y simulación de carga
 ├── shared/          config, protocolo (framing), esquemas por acción, logger
 └── infrastructure/  conexiones a MariaDB/Redis + repositorios por entidad
+tests/               pytest: unitarios + integración (marcador "integracion")
 ```

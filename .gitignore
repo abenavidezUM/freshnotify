@@ -8,3 +8,4 @@ venv/
 
 # lo genera celery beat al correr
 celerybeat-schedule*
+.pytest_cache/
